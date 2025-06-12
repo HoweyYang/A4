@@ -9,6 +9,9 @@ public class Client{
     private static final int TIMEOUT = 1000;
     // Maximum number of retries for failed requests
     private static final int MAX_RETRIES = 5;
+
+    private static final int chunkSize = 8192; // Size of each file chunk in bytes
+
     public static void main(String[] args){
         //validate command line arguments
         if(args.length != 3){
@@ -27,9 +30,11 @@ public class Client{
 
             //iterate through each file to request and download
             for(String fileName : files){
-                System.out.println("Requesting: " + fileName);//Log the file request
-                String request = "DOWNLOAD " + fileName; // Create the download request message
-                String response = retrySendReceive(socket, serverAddr, serverPort, request); // Send request and get response
+                  System.out.println("Requesting: " + fileName);//Log the file request
+                
+                  String request = "DOWNLOAD " + fileName; // Create the download request message
+                
+                  String response = retrySendReceive(socket, serverAddr, serverPort, request); // Send request and get response
 
                 //Process server response
                 if (response.startsWith("ERR")){
@@ -41,18 +46,19 @@ public class Client{
                     System.out.println("Unexpected response: " + response);
                     continue; // Skip to next file if response is not OK
                 }
+                
                 long filesSize = Long.parseLong(parts[3]); // Parse the file size from response
                 int dataPort = Integer.parseInt(parts[5]); // Parse the data port from response
                 downloadFile(socket, serverAddr,dataPort, fileName, filesSize);
-        }
-        } catch (IOException e) {
+            }
+        } catch (IOException e){
             System.err.println("Error: " + e.getMessage()); // Log any IO exceptions
         }
     }
     // Reads the list of filenames from the specified file
     private static List<String> readFileList(String path){
        List<String> files = new ArrayList<>(); // List to store filenames
-        try (BufferedReader reader = new BufferedReader(new FileReader(path))) { // Open file for reading
+       try (BufferedReader reader = new BufferedReader(new FileReader(path))) { // Open file for reading
             String line;
             while ((line = reader.readLine()) != null) { // Read each line
                 if (!line.trim().isEmpty()) { // Ignore empty lines
@@ -89,40 +95,56 @@ public class Client{
                 System.err.println("Error: " + e.getMessage()); // Log any IO exceptions
             }
         }
-        throw new RuntimeException("Failed after" + MAX_RETRIES + " retries" + msg); // Throw exception if all retries fail
+        throw new RuntimeException("Failed after " + MAX_RETRIES + " retries: " + msg); // Throw exception if all retries fail
     }
     // Downloads a file from the server in chunks
-    private static void downloadFile(DatagramSocket socket, InetAddress addr, int port, String fileName, long fileSize){
+    private static void downloadFile(DatagramSocket socket, InetAddress addr, int port, String fileName, long fileSize) {
+        long offset = 0;
         try (RandomAccessFile raf = new RandomAccessFile(fileName, "rw")) {
-            int chunkSize = 1024; // Size of each data chunk
-            long offset = 0; // Total bytes received so far
-
-            while (offset < fileSize) {//Continue until the entire file is downloaded
-                 long end = Math.min(offset + chunkSize - 1, fileSize - 1); // Calculate end byte for this chunk
+            while (offset < fileSize) {
+                long end = Math.min(offset + chunkSize - 1, fileSize - 1); // Calculate end byte for this chunk
                 String request = "FILE " + fileName + " GET START " + offset + " END " + end; // Build chunk request
                 String response = retrySendReceive(socket, addr, port, request); // Send request and get response
+                System.out.println("Server response: " + response);
 
-                String[] parts = response.split(" ", 9); // Split response into parts (limit to 9 to preserve data)
-
-                if(!parts[2].equals("OK")){
-                    System.out.println("Error: " + response); // Log error if response is not OK
-                    continue; // Retry or skip to next chunk
+                int dataIndex = response.indexOf("DATA ");
+                if (dataIndex == -1) {
+                    System.out.println("Invalid response format: no DATA field found");
+                    continue;
                 }
-                String data = parts[8].substring(5); // Extract the data part from response
-                byte[] bytes = Base64.getDecoder().decode(data); // Decode Base64 data to bytes
-                raf.seek(offset); // Move to the correct position in the file
-                raf.write(bytes); // Write the received bytes to the file
-                offset = Long.parseLong(parts[6]) + 1;//Update offset to the next byte after the current chunk
-                System.out.print("*");
+
+                String data = response.substring(dataIndex + 5).replaceAll("[^A-Za-z0-9+/=]", ""); // Keep only valid base64 chars
+
+                int mod = data.length() % 4;
+                if (mod != 0) {
+                    data += "====".substring(0, 4 - mod); // Pad with = if needed
+                }
+
+                byte[] bytes;
+                try {
+                    bytes = Base64.getDecoder().decode(data); // Decode base64 to bytes
+                } catch (IllegalArgumentException e) {
+                    System.err.println("Base64 decoding failed at offset " + offset);
+                    continue; // Skip and retry next chunk
+                }
+
+                raf.seek(offset); // Move file pointer
+                raf.write(bytes); // Write decoded chunk to file
+                offset = Long.parseLong(response.split(" END ")[1].split(" ")[0]) + 1; // Update offset for next chunk
+                System.out.print("*"); // Print progress marker
             }
-            System.out.println("\nDownload complete: " + fileName); // Log completion of download
-            String close = "FILE" + fileName + " CLOSE"; // Build close request
-            retrySendReceive(socket, addr, port, close); // Send close request to server
+            System.out.println("\nDownload complete: " + fileName);
+
+            // Send CLOSE request to notify server file transfer is complete
+            String closeRequest = "FILE " + fileName + " CLOSE";
+            String closeResponse = retrySendReceive(socket, addr, port, closeRequest);
+
+            if (!closeResponse.trim().equals("FILE " + fileName + " CLOSE_OK")) {
+                System.err.println("Unexpected CLOSE response: " + closeResponse);
+            }    
 
         } catch (IOException e) {
-            System.err.println("Download error: " + e.getMessage()); // Log any IO exceptions during download
+            System.err.println("Download error: " + e.getMessage());
         }
-
     }
-
 }

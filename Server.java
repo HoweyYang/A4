@@ -19,7 +19,7 @@ public class Server{
             //Create UDP socket on specified port
 
             //Log server startup
-            System.out.println("Server running on port" + port);
+            System.out.println("Server running on port:" + " " +port);
             while(true){
                 byte[] buffer = new byte[4096]; // Buffer for incoming data
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length); // Packet to receive data

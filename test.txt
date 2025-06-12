@@ -1,0 +1,3 @@
+txt.txt
+doc.pdf
+img.jpg
